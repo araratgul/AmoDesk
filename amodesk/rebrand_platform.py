@@ -18,7 +18,7 @@ BRAND = json.loads((ROOT / "amodesk" / "brand.json").read_text(encoding="utf-8")
 APP, EXE, ORG = BRAND["app_name"], BRAND["exe_name"], BRAND["org"]
 COMPANY, SITE = BRAND["company"], BRAND["website"]
 BUNDLE_ID = f"{ORG}.{EXE}"  # io.amobit.amodesk
-MAINTAINER = f"{COMPANY} <info@amobit.ru>"
+MAINTAINER = f"{COMPANY} <info@amobit.io>"
 errors = []
 
 # `rustdesk` as a name, not as part of librustdesk, rustdesk-org, rustdesk.com
