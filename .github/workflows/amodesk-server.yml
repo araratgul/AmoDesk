@@ -1,0 +1,57 @@
+# AmoDesk: hbbs/hbbr built from rustdesk-server PR #734 ("modern transports").
+#
+# Open-source hbbs 1.1.16 lacks what client 1.5.x uses: TCP key exchange, UDP NAT
+# test/hole punching, WebRTC and IPv6 forwarding (rustdesk/rustdesk-server#734).
+# The PR is not merged yet, so it is built from a pinned commit, never a branch.
+# Output: glibc binaries for debian:bookworm-slim (see server/docker-compose.yml).
+
+name: AmoDesk Server
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "rustdesk-server commit (NotOfficer/rustdesk-server, PR #734)"
+        default: "39b1b3f61b1d48da82e91ac4104dba1abcd3d452"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout rustdesk-server
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: NotOfficer/rustdesk-server
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Test
+        run: cargo test --release --locked
+
+      - name: Build
+        run: |
+          set -e
+          cargo build --release --locked --bin hbbs --bin hbbr
+          mkdir -p dist
+          cp target/release/hbbs target/release/hbbr dist/
+          strip dist/*
+          ./dist/hbbs --version
+          ldd dist/hbbs
+          git rev-parse HEAD > dist/COMMIT
+          sha256sum dist/hbbs dist/hbbr | tee dist/SHA256SUMS
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: amodesk-server-linux-x64
+          path: dist
+          if-no-files-found: error
