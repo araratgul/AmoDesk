@@ -201,6 +201,54 @@ if BRAND.get("hide_powered_by"):
          'Widget loadPowered(BuildContext context) {\n  if (true) {'),
     ])
 
+# 7. No RustDesk marketing or services in the product.
+WIKI = BRAND.get("docs_url", "https://amodesk.amobit.io/wiki/")
+DOWNLOAD = BRAND["download_url"]
+PRIVACY = BRAND["privacy_url"]
+#    7a. With our server baked in, the client must not consider itself to be on
+#        the public RustDesk server: that shows "set up your own server" under
+#        the ID with a link to rustdesk.com/pricing.
+if server:
+    patch("src/common.rs", [
+        ('pub fn using_public_server() -> bool {\n'
+         '    crate::get_custom_rendezvous_server(get_option("custom-rendezvous-server")).is_empty()\n}',
+         'pub fn using_public_server() -> bool {\n'
+         '    // AmoDesk: the rendezvous server is built in, never the public RustDesk one.\n'
+         '    false\n}'),
+    ])
+#    7b. Updates come from AmoDesk, never from api.rustdesk.com (a RustDesk
+#        update would replace the AmoDesk client). Automatic checks are already
+#        off for custom clients; this closes the manual "check for updates" path.
+patch("src/common.rs", [
+    ('pub async fn do_check_software_update() -> hbb_common::ResultType<()> {\n',
+     'pub async fn do_check_software_update() -> hbb_common::ResultType<()> {\n'
+     '    if is_custom_client() {\n        return Ok(());\n    }\n'),
+])
+#    7c. Every remaining rustdesk.com link in the UI goes to AmoDesk resources.
+LINKS = [
+    (r"https?://rustdesk\.com/docs/[^'\"\s)]*", WIKI),
+    (r"https?://rustdesk\.com/privacy(?:\.html)?", PRIVACY),
+    (r"https?://rustdesk\.com/pricing/?", SITE),
+    (r"https?://rustdesk\.com/download/?", DOWNLOAD),
+    (r"https?://rustdesk\.com/blog/[^'\"\s)]*", WIKI),
+    (r"https?://rustdesk\.com/?(?=['\"])", SITE),
+]
+ui_files = [p for p in (ROOT / "flutter" / "lib").rglob("*.dart")]
+ui_files += [ROOT / "src" / "lang" / "en.rs", ROOT / "src" / "client.rs", ROOT / "libs" / "hbb_common" / "src" / "config.rs"]
+for path in ui_files:
+    text = path.read_text(encoding="utf-8")
+    new = text
+    for pattern, repl in LINKS:
+        new = re.sub(pattern, repl, new)
+    if new != text:
+        path.write_text(new, encoding="utf-8", newline="")
+        print(f"relinked {path.relative_to(ROOT)}")
+    if path.suffix == ".dart" and "Text('rustdesk.com'" in new:
+        new = new.replace("Text('rustdesk.com'", "Text('amodesk.amobit.io'")
+        path.write_text(new, encoding="utf-8", newline="")
+    for m in re.finditer(r"https?://(?:www\.)?rustdesk\.com[^'\"\s)]*|'rustdesk\.com'", new):
+        errors.append(f"{path.relative_to(ROOT)}: rustdesk.com link left: {m.group(0)}")
+
 if errors:
     print("\nRebrand failed, upstream sources changed:", file=sys.stderr)
     for e in errors:
