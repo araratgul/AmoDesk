@@ -149,6 +149,50 @@ patch("flutter/lib/desktop/widgets/update_progress.dart", [
     ("AlwaysStoppedAnimation<Color>(Colors.blue)", "AlwaysStoppedAnimation<Color>(MyTheme.accent)"),
 ])
 
+# 5b. Brand neutrals (brand book: Deep Graphite #1E293B, Cloud White #F8FAFC,
+#     Slate Neutral #64748B). Light theme: cool slate greys instead of plain
+#     greys; dark theme: graphite surfaces instead of RustDesk's near-black.
+patch("flutter/lib/common.dart", [
+    # light
+    ("static const Color grayBg = Color(0xFFEFEFF2);", "static const Color grayBg = Color(0xFFF1F5F9);"),
+    ("hoverColor: Color.fromARGB(255, 224, 224, 224),", "hoverColor: Color(0xFFE2E8F0),"),
+    ("hintColor: Color(0xFFAAAAAA),", "hintColor: Color(0xFF94A3B8),"),
+    ("border: Color(0xFFCCCCCC),\n    border2: Color(0xFFBBBBBB),",
+     "border: Color(0xFFCBD5E1),\n    border2: Color(0xFF94A3B8),"),
+    ("highlight: Color(0xFFE5E5E5),", "highlight: Color(0xFFE2E8F0),"),
+    ("static const Color border = Color(0xFFCCCCCC);", "static const Color border = Color(0xFFCBD5E1);"),
+    # dark
+    ("hoverColor: Color.fromARGB(255, 45, 46, 53),", "hoverColor: Color(0xFF273449),"),
+    ("Color(0xFF18191E)", "Color(0xFF0F172A)"),
+    ("Color(0xFF24252B)", "Color(0xFF1E293B)"),
+    ("MaterialStatePropertyAll(Color(0xFF121212))", "MaterialStatePropertyAll(Color(0xFF0B1220))"),
+    ("static const Color canvasColor = Color(0xFF212121);", "static const Color canvasColor = Color(0xFF0F172A);"),
+    ("border: Color(0xFF555555),", "border: Color(0xFF334155),"),
+    ("highlight: Color(0xFF3F3F3F),", "highlight: Color(0xFF273449),"),
+])
+
+# 5c. Brand typeface Inter (SIL OFL 1.1, rsms/inter 4.1, static TTFs in
+#     amodesk/branding/fonts). Bundled as a Flutter font and set on both themes.
+import shutil
+FONT_SRC = ROOT / "amodesk" / "branding" / "fonts"
+FONT_DST = ROOT / "flutter" / "assets" / "fonts"
+FONT_DST.mkdir(parents=True, exist_ok=True)
+for f in FONT_SRC.iterdir():
+    shutil.copy2(f, FONT_DST / f.name)
+patch("flutter/pubspec.yaml", [
+    ("  fonts:\n    - family: GestureIcons\n",
+     "  fonts:\n    - family: Inter\n      fonts:\n"
+     "        - asset: assets/fonts/Inter-Regular.ttf\n"
+     "        - asset: assets/fonts/Inter-Medium.ttf\n          weight: 500\n"
+     "        - asset: assets/fonts/Inter-SemiBold.ttf\n          weight: 600\n"
+     "        - asset: assets/fonts/Inter-Bold.ttf\n          weight: 700\n"
+     "    - family: GestureIcons\n"),
+])
+patch("flutter/lib/common.dart", [
+    ("  static ThemeData lightTheme = ThemeData(\n", "  static ThemeData lightTheme = ThemeData(\n    fontFamily: 'Inter',\n"),
+    ("  static ThemeData darkTheme = ThemeData(\n", "  static ThemeData darkTheme = ThemeData(\n    fontFamily: 'Inter',\n"),
+])
+
 # 6. "Powered by RustDesk" link above the main window. The About page keeps
 #    the "Based on RustDesk (AGPL-3.0)" note and the license files stay.
 if BRAND.get("hide_powered_by"):
