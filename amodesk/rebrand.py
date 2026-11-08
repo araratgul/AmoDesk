@@ -249,6 +249,31 @@ for path in ui_files:
     for m in re.finditer(r"https?://(?:www\.)?rustdesk\.com[^'\"\s)]*|'rustdesk\.com'", new):
         errors.append(f"{path.relative_to(ROOT)}: rustdesk.com link left: {m.group(0)}")
 
+# 7. Open-source hbbs compatibility. The OSS rendezvous server (rustdesk-server
+#    1.1.x) never starts a TCP key exchange; only RustDesk Server Pro does. A
+#    client logged in to the console (it then carries an access token) insists
+#    on that exchange and fails with "Failed to secure tcp: deadline has
+#    elapsed". OSS hbbs ignores the token too, so: never wait for the exchange
+#    on the punch/relay paths and never put the token on that unencrypted socket.
+#    Elsewhere a server that stays silent counts as "no exchange" after 3 s
+#    instead of an error after 18 s.
+patch("src/client.rs", [
+    ("let legacy_secure = !key.is_empty() && (!token.is_empty() || !switch_code.is_empty());",
+     "let legacy_secure = false; // AmoDesk: OSS hbbs has no key exchange"),
+    ("            if !key.is_empty() && (!token.is_empty() || !switch_code.is_empty()) {\n"
+     "                secure_tcp(&mut socket, key).await?;",
+     "            if false {\n"
+     "                secure_tcp(&mut socket, key).await?;"),
+    ("            token: token.to_owned(),\n            nat_type: nat_type.into(),",
+     "            token: String::new(), // AmoDesk: never sent in the clear\n            nat_type: nat_type.into(),"),
+    ("                token: token.to_owned(),\n                uuid: uuid.clone(),",
+     "                token: String::new(), // AmoDesk: never sent in the clear\n                uuid: uuid.clone(),"),
+])
+patch("src/common.rs", [
+    ("    match timeout(READ_TIMEOUT, conn.next()).await? {\n        Some(Ok(bytes)) => {\n            if let Ok(msg_in) = RendezvousMessage::parse_from_bytes(&bytes) {",
+     "    match timeout(3_000, conn.next()).await.unwrap_or(None) {\n        Some(Ok(bytes)) => {\n            if let Ok(msg_in) = RendezvousMessage::parse_from_bytes(&bytes) {"),
+])
+
 if errors:
     print("\nRebrand failed, upstream sources changed:", file=sys.stderr)
     for e in errors:
