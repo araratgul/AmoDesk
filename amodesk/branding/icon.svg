@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- Placeholder AmoDesk icon. Replace with the final brand asset. -->
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2F6BFF"/>
+      <stop offset="1" stop-color="#00B3A4"/>
+    </linearGradient>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#g)"/>
+  <rect x="112" y="136" width="288" height="196" rx="28" fill="none" stroke="#fff" stroke-width="32"/>
+  <path d="M208 392h96" stroke="#fff" stroke-width="32" stroke-linecap="round"/>
+  <path d="M256 332v60" stroke="#fff" stroke-width="32"/>
+  <path d="M196 290l60-112 60 112" fill="none" stroke="#fff" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
