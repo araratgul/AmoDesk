@@ -1,0 +1,206 @@
+# AmoDesk: branded Windows x64 build.
+#
+# Based on the build-for-windows-flutter job in flutter-build.yml. When upstream
+# bumps toolchains there, copy the env values below.
+#
+# Server settings come from repository variables (Settings -> Variables -> Actions):
+#   AMODESK_RENDEZVOUS_SERVER  hbbs host, e.g. desk.amobit.io
+#   AMODESK_RS_PUB_KEY         id_ed25519.pub of the server (public, not a secret)
+#   AMODESK_API_SERVER         console URL, e.g. https://desk.amobit.io
+# Without them the build still works but talks to upstream public servers:
+# fine for checking the pipeline, never for shipping.
+#
+# Run: Actions -> "AmoDesk Windows" -> Run workflow, or push a tag amodesk-v*.
+
+name: AmoDesk Windows
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "amodesk-v*"
+
+permissions:
+  contents: write
+
+env:
+  SCITER_RUST_VERSION: "1.75"
+  LLVM_VERSION: "15.0.6"
+  FLUTTER_VERSION: "3.24.5"
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+  VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
+  VERSION: "1.5.1"
+  AMODESK_RENDEZVOUS_SERVER: ${{ vars.AMODESK_RENDEZVOUS_SERVER }}
+  AMODESK_RS_PUB_KEY: ${{ vars.AMODESK_RS_PUB_KEY }}
+  AMODESK_API_SERVER: ${{ vars.AMODESK_API_SERVER }}
+
+jobs:
+  generate-bridge:
+    uses: ./.github/workflows/bridge.yml
+
+  build-windows:
+    name: windows-x64
+    needs: [generate-bridge]
+    runs-on: windows-2022
+    env:
+      TARGET: x86_64-pc-windows-msvc
+      VCPKG_TRIPLET: x64-windows-static
+    steps:
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Checkout source code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bridge-artifact
+          path: ./
+
+      - name: Apply AmoDesk branding
+        shell: bash
+        run: python3 amodesk/rebrand.py
+
+      - name: Install ImageMagick
+        run: |
+          choco install -y imagemagick.app --no-progress
+          Get-ChildItem -Path "${env:ProgramFiles}" | % { $_.FullName } | Select-String -Pattern "[\/\\]ImageMagick[^\/\\]*$" | Out-File -Append -FilePath $env:GITHUB_PATH -Encoding utf8
+
+      - name: Generate AmoDesk icons
+        shell: bash
+        run: |
+          set -e
+          SVG=amodesk/branding/icon.svg
+          magick -background none -density 384 "$SVG" -resize 512x512 res/icon.png
+          magick res/icon.png -define icon:auto-resize=256,128,96,64,48,40,32,24,20,16 res/icon.ico
+          magick res/icon.png -resize 32x32 res/tray-icon.ico
+          magick res/icon.png -resize 32x32 res/32x32.png
+          magick res/icon.png -resize 64x64 res/64x64.png
+          magick res/icon.png -resize 128x128 res/128x128.png
+          magick res/icon.png -resize 256x256 res/128x128@2x.png
+          cp res/icon.png res/mac-icon.png
+          cp "$SVG" flutter/assets/icon.svg
+
+      - name: Install LLVM and Clang
+        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - name: Install flutter
+        uses: subosito/flutter-action@2783a3f08e1baf891508463f8c6653c258246225 # v2.12.0
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          architecture: x64
+
+      - name: Replace engine with rustdesk custom flutter engine
+        run: |
+          flutter doctor -v
+          flutter precache --windows
+          Invoke-WebRequest -Uri https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip -OutFile windows-x64-release.zip
+          Expand-Archive -Path windows-x64-release.zip -DestinationPath windows-x64-release
+          mv -Force windows-x64-release/*  C:/hostedtoolcache/windows/flutter/stable-${{ env.FLUTTER_VERSION }}-x64/bin/cache/artifacts/engine/windows-x64-release/
+
+      - name: Patch flutter
+        shell: bash
+        run: |
+          cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff $(dirname $(dirname $(which flutter)))
+          cd $(dirname $(dirname $(which flutter)))
+          git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
+
+      - name: Apply AmoDesk icons to the Flutter runner
+        run: |
+          cd ./flutter
+          flutter pub get
+          flutter pub run flutter_launcher_icons
+          cp ../res/icon.ico ./windows/runner/resources/app_icon.ico
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.SCITER_RUST_VERSION }}
+          targets: ${{ env.TARGET }}
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: amodesk-windows-2022
+
+      - name: Setup vcpkg with Github Actions binary cache
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        with:
+          vcpkgDirectory: C:\vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies
+        env:
+          VCPKG_DEFAULT_HOST_TRIPLET: ${{ env.VCPKG_TRIPLET }}
+        shell: bash
+        run: |
+          if ! $VCPKG_ROOT/vcpkg install --triplet $VCPKG_TRIPLET --x-install-root="$VCPKG_ROOT/installed"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r f; do echo "$f:"; cat "$f"; done
+            exit 1
+          fi
+
+      - name: Build AmoDesk
+        run: |
+          python3 .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
+          mv ./flutter/build/windows/x64/runner/Release ./rustdesk
+
+          # Virtual display driver
+          Invoke-WebRequest -Uri https://github.com/rustdesk-org/rdev/releases/download/usbmmidd_v2/usbmmidd_v2.zip -OutFile usbmmidd_v2.zip
+          Expand-Archive usbmmidd_v2.zip -DestinationPath .
+          Remove-Item -Path usbmmidd_v2\Win32 -Recurse
+          Remove-Item -Path "usbmmidd_v2\deviceinstaller64.exe", "usbmmidd_v2\deviceinstaller.exe", "usbmmidd_v2\usbmmidd.bat"
+          mv -Force .\usbmmidd_v2 ./rustdesk
+
+      - name: Copy Runner.res for the portable packer
+        continue-on-error: true
+        shell: bash
+        run: |
+          runner_res=$(find . -name "Runner.res" | head -1)
+          [ -n "$runner_res" ] && cp "$runner_res" ./libs/portable/Runner.res
+
+      - name: Rename executable
+        shell: bash
+        run: mv ./rustdesk/rustdesk.exe ./rustdesk/amodesk.exe
+
+      - name: Upload unpacked build
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: amodesk-windows-x64-unpacked
+          path: rustdesk
+
+      - name: Build self-extracting executable
+        shell: bash
+        run: |
+          sed -i '/dpiAware/d' res/manifest.xml
+          pushd ./libs/portable
+          pip3 install -r requirements.txt
+          python3 ./generate.py -f ../../rustdesk/ -o . -e ../../rustdesk/amodesk.exe
+          popd
+          mkdir -p ./dist
+          mv ./target/release/rustdesk-portable-packer.exe ./dist/AmoDesk-${{ env.VERSION }}-x64.exe
+          sha256sum ./dist/*
+
+      - name: Upload AmoDesk installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: amodesk-windows-x64
+          path: ./dist
+          if-no-files-found: error
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/amodesk-v')
+        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+        with:
+          prerelease: true
+          files: ./dist/AmoDesk-*.exe
