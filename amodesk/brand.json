@@ -4,6 +4,12 @@
   "org": "io.amobit",
   "company": "Gulian Digital",
   "website": "https://amobit.io",
-  "download_url": "https://amobit.io/amodesk",
-  "privacy_url": "https://amobit.io/privacy"
+  "download_url": "https://amodesk.amobit.io",
+  "privacy_url": "https://amobit.io/ru/privacy",
+  "colors": {
+    "accent": "E11D48",
+    "accent_dark": "BE123C",
+    "graphite": "1E293B"
+  },
+  "hide_powered_by": true
 }

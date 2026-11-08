@@ -40,7 +40,7 @@ def patch(rel, pairs, regex=False):
     path = ROOT / rel
     text = path.read_text(encoding="utf-8")
     orig = text
-    for old, new in pairs:
+    for old, new in pairs:  # read_text uses universal newlines, so CRLF checkouts match too
         if regex:
             text, n = re.subn(old, new, text)
         else:
@@ -118,6 +118,44 @@ patch("flutter/lib/mobile/pages/connection_page.dart", [
 patch("flutter/lib/desktop/pages/install_page.dart", [
     ("'https://rustdesk.com/privacy.html'", f"'{BRAND['privacy_url']}'"),
 ])
+
+# 5. Brand colours: RustDesk blue -> Amo Red. MyTheme.accent paints the ID and
+#    password side bars and icons, MyTheme.button the filled buttons
+#    ("Connect"), colorScheme.primary focus rings, switches and progress bars.
+C = BRAND["colors"]
+RED, RED_DARK = C["accent"], C["accent_dark"]
+patch("flutter/lib/common.dart", [
+    ("static const Color accent = Color(0xFF0071FF);", f"static const Color accent = Color(0xFF{RED});"),
+    ("static const Color accent50 = Color(0x770071FF);", f"static const Color accent50 = Color(0x77{RED});"),
+    ("static const Color accent80 = Color(0xAA0071FF);", f"static const Color accent80 = Color(0xAA{RED});"),
+    ("static const Color idColor = Color(0xFF00B6F0);", f"static const Color idColor = Color(0xFF{RED});"),
+    ("static const Color button = Color(0xFF2C8CFF);", f"static const Color button = Color(0xFF{RED});"),
+    # default (info) message box colour
+    ("  return Color(0xFF2C8CFF);\n}", f"  return Color(0xFF{RED});\n}}"),
+    ("primary: Colors.blue, secondary: accent, background: grayBg)",
+     "primary: accent, secondary: accent, background: grayBg)"),
+    ("      primary: Colors.blue,\n      secondary: accent,", "      primary: accent,\n      secondary: accent,"),
+    # links inside dialogs
+    ("        color: Colors.blue,\n        decoration: TextDecoration.underline,",
+     "        color: MyTheme.accent,\n        decoration: TextDecoration.underline,"),
+])
+patch("flutter/lib/desktop/pages/desktop_home_page.dart", [
+    ("const borderColor = Color(0xFF2F65BA);", f"const borderColor = Color(0xFF{RED_DARK});"),
+    # "install AmoDesk" / UAC banner in the left panel: pink gradient -> brand red
+    ("Color.fromARGB(255, 226, 66, 188),\n                  Color.fromARGB(255, 244, 114, 124),",
+     f"Color(0xFF{RED}),\n                  Color(0xFF{RED_DARK}),"),
+])
+patch("flutter/lib/desktop/widgets/update_progress.dart", [
+    ("AlwaysStoppedAnimation<Color>(Colors.blue)", "AlwaysStoppedAnimation<Color>(MyTheme.accent)"),
+])
+
+# 6. "Powered by RustDesk" link above the main window. The About page keeps
+#    the "Based on RustDesk (AGPL-3.0)" note and the license files stay.
+if BRAND.get("hide_powered_by"):
+    patch("flutter/lib/common.dart", [
+        ('Widget loadPowered(BuildContext context) {\n  if (bind.mainGetBuildinOption(key: "hide-powered-by-me") == \'Y\') {',
+         'Widget loadPowered(BuildContext context) {\n  if (true) {'),
+    ])
 
 if errors:
     print("\nRebrand failed, upstream sources changed:", file=sys.stderr)
