@@ -104,11 +104,17 @@ jobs:
         with:
           version: ${{ env.LLVM_VERSION }}
 
-      - name: Install LLVM and Clang (retry 2)
+      # Fallback: the LLVM preinstalled on windows-2022 (newer than 15, used only for libclang/bindgen).
+      - name: Use preinstalled LLVM (fallback)
         if: steps.llvm1.outcome == 'failure' && steps.llvm2.outcome == 'failure'
-        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
-        with:
-          version: ${{ env.LLVM_VERSION }}
+        shell: pwsh
+        run: |
+          $llvm = "C:\Program Files\LLVM\bin"
+          if (-not (Test-Path "$llvm\libclang.dll")) { throw "No preinstalled LLVM at $llvm" }
+          & "$llvm\clang.exe" --version
+          "LIBCLANG_PATH=$llvm" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
+          $llvm | Out-File -Append -FilePath $env:GITHUB_PATH -Encoding utf8
+          Write-Host "::warning::LLVM $env:LLVM_VERSION download failed, using preinstalled LLVM"
 
       - name: Install flutter
         uses: subosito/flutter-action@2783a3f08e1baf891508463f8c6653c258246225 # v2.12.0
