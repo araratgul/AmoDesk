@@ -214,6 +214,36 @@ jobs:
           mv ./target/release/rustdesk-portable-packer.exe ./dist/AmoDesk-${{ env.VERSION }}-x64.exe
           sha256sum ./dist/*
 
+      # MSI: a regular Windows Installer package. Antivirus products flag it far
+      # less often than the self-extracting exe (rustdesk/rustdesk#16493, D#2485),
+      # and it is what admins deploy through GPO/Intune.
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce # v2
+
+      - name: Build msi
+        run: |
+          pushd ./res/msi
+          python preprocess.py --arp -d ../../rustdesk --app-name AmoDesk -m "Gulian Digital"
+          if ($LASTEXITCODE -ne 0) { throw "preprocess.py failed" }
+          nuget restore msi.sln
+          msbuild msi.sln -p:Configuration=Release -p:Platform=x64 /p:TargetVersion=Windows10
+          if ($LASTEXITCODE -ne 0) { throw "msbuild failed" }
+          $msi = Get-ChildItem ./Package/bin/*/Release/en-us/Package.msi | Select-Object -First 1
+          popd
+          mv $msi.FullName ./dist/AmoDesk-${{ env.VERSION }}-x64.msi
+
+      - name: Check Windows packages
+        shell: bash
+        run: |
+          set -e
+          # No copy of the system RuntimeBroker.exe may ship (Defender flags the masquerade).
+          if find ./rustdesk -iname 'RuntimeBroker*' | grep -q .; then echo "::error::RuntimeBroker copy in the build"; exit 1; fi
+          if [ -n "$AMODESK_RENDEZVOUS_SERVER" ]; then
+            grep -c "$AMODESK_RENDEZVOUS_SERVER" ./rustdesk/librustdesk.dll
+            if grep -q "rs-ny.rustdesk.com" ./rustdesk/librustdesk.dll; then echo "::error::upstream server in the dll"; exit 1; fi
+          fi
+          sha256sum ./dist/*
+
       - name: Upload AmoDesk installer
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -226,4 +256,6 @@ jobs:
         uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
         with:
           prerelease: true
-          files: ./dist/AmoDesk-*.exe
+          files: |
+            ./dist/AmoDesk-*.exe
+            ./dist/AmoDesk-*.msi
