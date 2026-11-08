@@ -88,7 +88,24 @@ jobs:
           cp res/icon.png res/mac-icon.png
           cp "$SVG" flutter/assets/icon.svg
 
+      # GitHub release downloads sometimes return 504 on runners; try up to three times.
       - name: Install LLVM and Clang
+        id: llvm1
+        continue-on-error: true
+        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - name: Install LLVM and Clang (retry 1)
+        id: llvm2
+        if: steps.llvm1.outcome == 'failure'
+        continue-on-error: true
+        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - name: Install LLVM and Clang (retry 2)
+        if: steps.llvm1.outcome == 'failure' && steps.llvm2.outcome == 'failure'
         uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
         with:
           version: ${{ env.LLVM_VERSION }}
