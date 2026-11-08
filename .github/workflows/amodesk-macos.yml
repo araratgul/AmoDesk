@@ -1,0 +1,188 @@
+# AmoDesk: branded macOS build (dmg for Apple Silicon and Intel).
+#
+# Based on the macOS job in flutter-build.yml. Without an Apple Developer ID the
+# app is only ad-hoc signed and not notarized: Gatekeeper asks the user to allow
+# it in System Settings -> Privacy & Security on first launch.
+# Server settings: repository variables AMODESK_*, see amodesk-windows.yml.
+#
+# Run: Actions -> "AmoDesk macOS" -> Run workflow, or push a tag amodesk-v*.
+
+name: AmoDesk macOS
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "amodesk-v*"
+
+permissions:
+  contents: write
+
+env:
+  MAC_RUST_VERSION: "1.81"
+  FLUTTER_VERSION: "3.24.5"
+  FLUTTER_MACOS_ARM_VERSION: "3.44.9"
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+  VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
+  VERSION: "1.5.1"
+  AMODESK_RENDEZVOUS_SERVER: ${{ vars.AMODESK_RENDEZVOUS_SERVER }}
+  AMODESK_RS_PUB_KEY: ${{ vars.AMODESK_RS_PUB_KEY }}
+  AMODESK_API_SERVER: ${{ vars.AMODESK_API_SERVER }}
+
+jobs:
+  generate-bridge:
+    uses: ./.github/workflows/bridge.yml
+
+  build-macos:
+    name: macos-${{ matrix.job.arch }}
+    needs: [generate-bridge]
+    runs-on: ${{ matrix.job.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - { arch: aarch64, target: aarch64-apple-darwin, os: macos-15, vcpkg-triplet: arm64-osx,
+              extra-build-args: "--screencapturekit" }
+          - { arch: x86_64, target: x86_64-apple-darwin, os: macos-15-intel, vcpkg-triplet: x64-osx,
+              extra-build-args: "" }
+    steps:
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Checkout source code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
+
+      - name: Install build runtime
+        run: |
+          brew install llvm create-dmg librsvg gnu-sed
+          command -v pkg-config >/dev/null || brew install pkg-config
+
+      - name: Install NASM
+        run: |
+          # NASM 2.16.x; brew's NASM 3.x breaks aom and other codecs.
+          wget -q https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/macosx/nasm-2.16.03-macosx.zip
+          unzip -q nasm-2.16.03-macosx.zip
+          sudo cp nasm-2.16.03/nasm /usr/local/bin/nasm
+          nasm --version
+
+      - name: Install flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ matrix.job.arch == 'aarch64' && env.FLUTTER_MACOS_ARM_VERSION || env.FLUTTER_VERSION }}
+
+      - name: Keep CocoaPods for Flutter 3.44 (arm64)
+        if: ${{ matrix.job.arch == 'aarch64' }}
+        run: flutter config --no-enable-swift-package-manager
+
+      - name: Patch flutter
+        if: ${{ matrix.job.arch == 'x86_64' }}
+        run: |
+          cd $(dirname $(dirname $(which flutter)))
+          git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff
+
+      - name: Workaround for flutter issue
+        shell: bash
+        run: |
+          cd "$(dirname "$(which flutter)")"
+          # https://github.com/flutter/flutter/issues/133533
+          sed -i -e 's/_setFramesEnabledState(false);/\/\/_setFramesEnabledState(false);/g' ../packages/flutter/lib/src/scheduler/binding.dart
+
+      - name: Patch sources for Flutter 3.44 (arm64)
+        if: ${{ matrix.job.arch == 'aarch64' }}
+        shell: bash
+        run: |
+          export PATH="$(brew --prefix gnu-sed)/libexec/gnubin:$PATH"
+          bash .github/patches/apply_flutter_3.44_source_patches.sh
+
+      - name: Apply AmoDesk branding
+        shell: bash
+        run: |
+          python3 amodesk/rebrand.py
+          python3 amodesk/rebrand_platform.py macos
+          bash amodesk/gen_icons.sh desktop
+          bash amodesk/gen_icons.sh macos
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.MAC_RUST_VERSION }}
+          targets: ${{ matrix.job.target }}
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: amodesk-${{ matrix.job.os }}
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ matrix.job.arch == 'aarch64' && 'bridge-artifact-flutter-3.44' || 'bridge-artifact' }}
+          path: ./
+
+      - name: Setup vcpkg with Github Actions binary cache
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies
+        run: |
+          if ! $VCPKG_ROOT/vcpkg install --x-install-root="$VCPKG_ROOT/installed"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r f; do echo "$f:"; cat "$f"; done
+            exit 1
+          fi
+
+      - name: Build AmoDesk
+        run: |
+          if [ "${{ matrix.job.arch }}" = "aarch64" ]; then
+            MIN_MACOS_VERSION="12.3"
+            sed -i -e "s/MACOSX_DEPLOYMENT_TARGET\=[0-9]*.[0-9]*/MACOSX_DEPLOYMENT_TARGET=${MIN_MACOS_VERSION}/" build.py
+            sed -i -e "s/platform :osx, '.*'/platform :osx, '${MIN_MACOS_VERSION}'/" flutter/macos/Podfile
+            sed -i -e "s/osx_minimum_system_version = \"[0-9]*.[0-9]*\"/osx_minimum_system_version = \"${MIN_MACOS_VERSION}\"/" Cargo.toml
+            sed -i -e "s/MACOSX_DEPLOYMENT_TARGET = [0-9]*.[0-9]*;/MACOSX_DEPLOYMENT_TARGET = ${MIN_MACOS_VERSION};/" flutter/macos/Runner.xcodeproj/project.pbxproj
+            export MACOSX_DEPLOYMENT_TARGET=${MIN_MACOS_VERSION}
+          fi
+          ./build.py --flutter --hwcodec --unix-file-copy-paste ${{ matrix.job.extra-build-args }}
+
+      - name: Ad-hoc sign and create dmg
+        run: |
+          set -e
+          APP=./flutter/build/macos/Build/Products/Release/AmoDesk.app
+          test -d "$APP"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$APP/Contents/Info.plist"
+          codesign --force --deep -s - "$APP"
+          codesign --verify --deep --strict "$APP"
+          # The binary must carry our server, not the upstream public one.
+          if [ -n "$AMODESK_RENDEZVOUS_SERVER" ]; then
+            grep -rl "$AMODESK_RENDEZVOUS_SERVER" "$APP/Contents" | head -3 | grep .
+            if grep -rlq "rs-ny.rustdesk.com" "$APP/Contents"; then echo "::error::upstream server in the app"; exit 1; fi
+          fi
+          CREATE_DMG="$(readlink -f "$(command -v create-dmg)")"
+          sed -i -e 's/MAXIMUM_UNMOUNTING_ATTEMPTS=3/MAXIMUM_UNMOUNTING_ATTEMPTS=7/' "$CREATE_DMG"
+          mkdir -p dist
+          create-dmg --volname "AmoDesk" --icon "AmoDesk.app" 200 190 --hide-extension "AmoDesk.app" \
+            --window-size 800 400 --app-drop-link 600 185 \
+            dist/AmoDesk-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg "$APP"
+          shasum -a 256 dist/*
+
+      - name: Upload dmg
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: amodesk-macos-${{ matrix.job.arch }}
+          path: dist
+          if-no-files-found: error
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/amodesk-v')
+        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+        with:
+          prerelease: true
+          files: dist/*.dmg

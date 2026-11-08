@@ -1,0 +1,204 @@
+# AmoDesk: branded Android build, one APK for arm64-v8a + armeabi-v7a phones.
+#
+# Based on build-rustdesk-android in flutter-build.yml.
+# Signing: repository secrets (keep the keystore: updates need the same key)
+#   AMODESK_ANDROID_KEYSTORE        base64 of the .jks
+#   AMODESK_ANDROID_KEYSTORE_PASS   store password
+#   AMODESK_ANDROID_KEY_ALIAS       key alias
+#   AMODESK_ANDROID_KEY_PASS        key password
+# Without them the APK is debug-signed: fine for testing, never for shipping.
+# Server settings: repository variables AMODESK_*, see amodesk-windows.yml.
+#
+# Run: Actions -> "AmoDesk Android" -> Run workflow, or push a tag amodesk-v*.
+
+name: AmoDesk Android
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "amodesk-v*"
+
+permissions:
+  contents: write
+
+env:
+  RUST_VERSION: "1.75"
+  CARGO_NDK_VERSION: "3.1.2"
+  ANDROID_FLUTTER_VERSION: "3.24.5"
+  NDK_VERSION: "r28c"
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+  VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
+  VERSION: "1.5.1"
+  AMODESK_RENDEZVOUS_SERVER: ${{ vars.AMODESK_RENDEZVOUS_SERVER }}
+  AMODESK_RS_PUB_KEY: ${{ vars.AMODESK_RS_PUB_KEY }}
+  AMODESK_API_SERVER: ${{ vars.AMODESK_API_SERVER }}
+
+jobs:
+  generate-bridge:
+    uses: ./.github/workflows/bridge.yml
+
+  build-android:
+    name: android-apk
+    needs: [generate-bridge]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: false
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake curl gcc-multilib git g++ g++-multilib \
+            libc6-dev libclang-dev libunwind-dev llvm-dev nasm ninja-build \
+            openjdk-17-jdk-headless pkg-config tree wget librsvg2-bin
+
+      - name: Checkout source code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
+
+      - name: Apply AmoDesk branding
+        run: |
+          python3 amodesk/rebrand.py
+          python3 amodesk/rebrand_platform.py android
+          bash amodesk/gen_icons.sh desktop
+          bash amodesk/gen_icons.sh android
+
+      - name: Install flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.ANDROID_FLUTTER_VERSION }}
+
+      - name: Patch flutter
+        run: |
+          cd $(dirname $(dirname $(which flutter)))
+          git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff
+
+      - uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1
+        id: setup-ndk
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+
+      - name: Setup vcpkg with Github Actions binary cache
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        with:
+          vcpkgDirectory: /opt/artifacts/vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies
+        shell: bash
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          for abi in arm64-v8a armeabi-v7a; do
+            if ! ./flutter/build_android_deps.sh "$abi"; then
+              find "${VCPKG_ROOT}/" -name "*.log" | while read -r f; do echo "$f:"; cat "$f"; done
+              exit 1
+            fi
+          done
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bridge-artifact
+          path: ./
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: aarch64-linux-android,armv7-linux-androideabi
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: amodesk-android
+
+      - name: Build AmoDesk library
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          set -e
+          cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }} --locked
+          SYSROOT=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib
+          JNI=./flutter/android/app/src/main/jniLibs
+          ./flutter/ndk_arm64.sh
+          mkdir -p $JNI/arm64-v8a
+          cp ./target/aarch64-linux-android/release/liblibrustdesk.so $JNI/arm64-v8a/librustdesk.so
+          cp $SYSROOT/aarch64-linux-android/libc++_shared.so $JNI/arm64-v8a/
+          ./flutter/ndk_arm.sh
+          mkdir -p $JNI/armeabi-v7a
+          cp ./target/armv7-linux-androideabi/release/liblibrustdesk.so $JNI/armeabi-v7a/librustdesk.so
+          cp $SYSROOT/arm-linux-androideabi/libc++_shared.so $JNI/armeabi-v7a/
+
+      - name: Build APK
+        env:
+          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+        run: |
+          set -e
+          export PATH=$JAVA_HOME/bin:$PATH
+          sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
+          # Signed below with apksigner; gradle uses the debug key.
+          sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
+          cd flutter
+          flutter build apk --release --target-platform android-arm,android-arm64
+          mkdir -p ../dist
+          cp build/app/outputs/flutter-apk/app-release.apk ../dist/amodesk-unsigned.apk
+
+      - name: Sign APK
+        env:
+          KEYSTORE_B64: ${{ secrets.AMODESK_ANDROID_KEYSTORE }}
+          KS_PASS: ${{ secrets.AMODESK_ANDROID_KEYSTORE_PASS }}
+          KEY_ALIAS: ${{ secrets.AMODESK_ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.AMODESK_ANDROID_KEY_PASS }}
+        run: |
+          set -e
+          OUT=dist/AmoDesk-${{ env.VERSION }}-android.apk
+          BT=$(ls -d /usr/local/lib/android/sdk/build-tools/* | sort -V | tail -1)
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::warning::No AMODESK_ANDROID_KEYSTORE secret: shipping the debug-signed APK"
+            mv dist/amodesk-unsigned.apk "$OUT"
+          else
+            echo "$KEYSTORE_B64" | base64 -d > /tmp/amodesk.jks
+            "$BT/apksigner" sign --ks /tmp/amodesk.jks --ks-pass env:KS_PASS \
+              --ks-key-alias "$KEY_ALIAS" --key-pass env:KEY_PASS \
+              --out "$OUT" dist/amodesk-unsigned.apk
+            rm -f /tmp/amodesk.jks dist/amodesk-unsigned.apk
+          fi
+          "$BT/apksigner" verify --print-certs "$OUT" | head -5
+          "$BT/aapt2" dump badging "$OUT" | grep -E "^package:|application-label:"
+          sha256sum dist/*
+
+      - name: Upload APK
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: amodesk-android
+          path: dist
+          if-no-files-found: error
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/amodesk-v')
+        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+        with:
+          prerelease: true
+          files: dist/*.apk
