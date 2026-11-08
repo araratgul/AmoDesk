@@ -104,18 +104,6 @@ jobs:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
           doNotCache: false
 
-      - name: Install vcpkg dependencies
-        shell: bash
-        env:
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-        run: |
-          for abi in arm64-v8a armeabi-v7a; do
-            if ! ./flutter/build_android_deps.sh "$abi"; then
-              find "${VCPKG_ROOT}/" -name "*.log" | while read -r f; do echo "$f:"; cat "$f"; done
-              exit 1
-            fi
-          done
-
       - name: Restore bridge files
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -133,19 +121,30 @@ jobs:
         with:
           prefix-key: amodesk-android
 
+      # vcpkg runs in manifest mode: installing one triplet removes the other,
+      # so each ABI's library is built right after its own dependencies.
       - name: Build AmoDesk library
+        shell: bash
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           set -e
+          deps() {
+            if ! ./flutter/build_android_deps.sh "$1"; then
+              find "${VCPKG_ROOT}/" -name "*.log" | while read -r f; do echo "$f:"; cat "$f"; done
+              exit 1
+            fi
+          }
           cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }} --locked
           SYSROOT=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib
           JNI=./flutter/android/app/src/main/jniLibs
+          deps arm64-v8a
           ./flutter/ndk_arm64.sh
           mkdir -p $JNI/arm64-v8a
           cp ./target/aarch64-linux-android/release/liblibrustdesk.so $JNI/arm64-v8a/librustdesk.so
           cp $SYSROOT/aarch64-linux-android/libc++_shared.so $JNI/arm64-v8a/
+          deps armeabi-v7a
           ./flutter/ndk_arm.sh
           mkdir -p $JNI/armeabi-v7a
           cp ./target/armv7-linux-androideabi/release/liblibrustdesk.so $JNI/armeabi-v7a/librustdesk.so
