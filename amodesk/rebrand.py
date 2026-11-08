@@ -274,6 +274,29 @@ patch("src/common.rs", [
      "    match timeout(3_000, conn.next()).await.unwrap_or(None) {\n        Some(Ok(bytes)) => {\n            if let Ok(msg_in) = RendezvousMessage::parse_from_bytes(&bytes) {"),
 ])
 
+# 8. Antivirus false positives on Windows.
+#    The legacy "topmost window" privacy mode copies C:\Windows\System32\RuntimeBroker.exe
+#    next to the app as RuntimeBroker_rustdesk.exe to inject a DLL into it. Defender's
+#    ML models flag that system-binary masquerade (Trojan:Win32/Bearfoos.B!ml). That
+#    mode is no longer offered (privacy mode uses exclude-from-capture / magnifier /
+#    virtual display) and its DLL is not shipped, so the copy is dropped.
+#    Also give the binaries a CompanyName: unsigned files without one look worse.
+patch("libs/portable/src/main.rs", [
+    ("    #[cfg(windows)]\n    win::copy_runtime_broker(&dir);\n",
+     "    #[cfg(windows)]\n    let _ = win::copy_runtime_broker; // AmoDesk: no RuntimeBroker copy\n"),
+])
+patch("src/platform/windows.rs", [
+    ("pub fn check_update_broker_process() -> ResultType<()> {\n",
+     "pub fn check_update_broker_process() -> ResultType<()> {\n"
+     "    if true {\n        return Ok(()); // AmoDesk: no RuntimeBroker copy\n    }\n"),
+    ("        {main_exe}\n        copy /Y \\\"{ORIGIN_PROCESS_EXE}\\\" \\\"{path}\\\\{broker_exe}\\\"\n        \",\n"
+     "        ORIGIN_PROCESS_EXE = win_topmost_window::ORIGIN_PROCESS_EXE,\n"
+     "        broker_exe = win_topmost_window::INJECTED_PROCESS_EXE,\n",
+     "        {main_exe}\n        \",\n"),
+])
+for rel in ("Cargo.toml", "libs/portable/Cargo.toml"):
+    patch(rel, [(f'ProductName = "{APP}"\n', f'ProductName = "{APP}"\nCompanyName = "{COMPANY}"\n')])
+
 if errors:
     print("\nRebrand failed, upstream sources changed:", file=sys.stderr)
     for e in errors:
